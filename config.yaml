@@ -1,0 +1,37 @@
+name: TeslaMate Trip Metrics
+slug: teslamate_trip_metrics
+description: Publishes TeslaMate driving and parked-energy totals to MQTT.
+version: "1.0.0"
+startup: services
+boot: auto
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armv7
+  - armhf
+  - i386
+
+options:
+  db_host: db21ed7f-postgres-latest
+  db_port: 5432
+  db_name: teslamate
+  db_user: postgres
+  db_password: ""
+  mqtt_host: core-mosquitto
+  mqtt_port: 1883
+  mqtt_user: teslamate
+  mqtt_password: ""
+  interval_seconds: 60
+
+schema:
+  db_host: str
+  db_port: int
+  db_name: str
+  db_user: str
+  db_password: password
+  mqtt_host: str
+  mqtt_port: int
+  mqtt_user: str
+  mqtt_password: password
+  interval_seconds: int
