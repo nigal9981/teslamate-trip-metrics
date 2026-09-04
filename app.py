@@ -59,6 +59,20 @@ WHERE drive_id IS NULL
   AND previous_drive_id IS NULL;
 """
 
+CHARGING_QUERY = """
+SELECT ROUND(
+  COALESCE(
+    SUM(GREATEST(charge_energy_added, charge_energy_used)),
+    0
+  )::numeric,
+  3
+) AS total_kwh
+FROM charging_processes
+WHERE car_id = 1
+  AND end_date IS NOT NULL
+  AND (charge_energy_added IS NULL OR charge_energy_added > 0);
+"""
+
 TOPIC_BASE = "teslamate_trip_metrics"
 
 
@@ -117,11 +131,19 @@ publish_discovery(
     "mdi:car-clock",
 )
 
+publish_discovery(
+    client,
+    "total_charged_energy",
+    "TeslaMate Total Charged Energy",
+    "mdi:battery-charging",
+)
+
 interval = max(int(config["interval_seconds"]), 30)
 
 while True:
     try:
         driving_kwh = get_metric(DRIVING_QUERY)
+        charged_kwh = get_metric(CHARGING_QUERY)
         parked_kwh = get_metric(PARKED_QUERY)
 
         client.publish(
@@ -132,6 +154,12 @@ while True:
         client.publish(
             f"{TOPIC_BASE}/total_parked_energy",
             f"{parked_kwh:.3f}",
+            retain=True,
+        )
+
+        client.publish(
+            f"{TOPIC_BASE}/total_charged_energy",
+            f"{charged_kwh:.3f}",
             retain=True,
         )
 
