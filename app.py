@@ -120,7 +120,7 @@ LIMIT 1;
 """
 
 
-def get_connection():def get_connection():
+def get_connection():
     return psycopg.connect(
         host=config["db_host"],
         port=config["db_port"],
