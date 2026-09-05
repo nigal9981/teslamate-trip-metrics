@@ -84,6 +84,7 @@ SELECT
   d.id AS drive_id,
   d.distance AS distance_km,
   d.end_date,
+  FLOOR(EXTRACT(EPOCH FROM (d.end_date - d.start_date)) / 60)::integer AS duration_minutes,
   ROUND(
     (
       GREATEST(
@@ -216,6 +217,13 @@ def setup_discovery(client):
             "measurement",
         ),
         (
+            "last_drive_duration",
+            "TeslaMate Last Drive Duration",
+            "min",
+            "duration",
+            "measurement",
+        ),
+        (
             "last_drive_id",
             "TeslaMate Last Drive ID",
             None,
@@ -302,6 +310,11 @@ def main():
                 client,
                 "last_drive_consumption",
                 last_drive.get("consumption_kwh_100km", 0),
+            )
+            publish_state(
+                client,
+                "last_drive_duration",
+                last_drive.get("duration_minutes", 0),
             )
 
             logger.info(
