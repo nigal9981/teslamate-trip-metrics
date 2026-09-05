@@ -85,21 +85,25 @@ SELECT
   d.distance AS distance_km,
   d.end_date,
   ROUND(
-    GREATEST(
-      start_position.ideal_battery_range_km -
-      end_position.ideal_battery_range_km,
-      0
-    ) * car.efficiency,
-    3
-  ) AS energy_kwh,
-  ROUND(
     (
       GREATEST(
         start_position.ideal_battery_range_km -
         end_position.ideal_battery_range_km,
         0
       ) * car.efficiency
-    ) / NULLIF(d.distance, 0) * 100,
+    )::numeric,
+    3
+  ) AS energy_kwh,
+  ROUND(
+    (
+      (
+        GREATEST(
+          start_position.ideal_battery_range_km -
+          end_position.ideal_battery_range_km,
+          0
+        ) * car.efficiency
+      ) / NULLIF(d.distance, 0) * 100
+    )::numeric,
     1
   ) AS consumption_kwh_100km
 FROM drives AS d
@@ -116,7 +120,7 @@ LIMIT 1;
 """
 
 
-def get_connection():
+def get_connection():def get_connection():
     return psycopg.connect(
         host=config["db_host"],
         port=config["db_port"],
