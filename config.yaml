@@ -1,7 +1,7 @@
 name: TeslaMate Trip Metrics
 slug: teslamate_trip_metrics
 description: Publishes TeslaMate driving and parked-energy totals to MQTT.
-version: "1.0.7"
+version: "1.0.8"
 startup: services
 boot: auto
 init: false

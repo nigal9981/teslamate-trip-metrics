@@ -87,7 +87,7 @@ SELECT
   FLOOR(EXTRACT(EPOCH FROM (d.end_date - d.start_date)) / 60)::integer AS duration_minutes,
   ROUND(
     (
-      (d.start_ideal_battery_range_km - d.end_ideal_battery_range_km)
+      (d.start_ideal_range_km - d.end_ideal_range_km)
       * car.efficiency
     )::numeric,
     3
@@ -95,7 +95,7 @@ SELECT
   ROUND(
     (
       (
-        (d.start_ideal_battery_range_km - d.end_ideal_battery_range_km)
+        (d.start_ideal_range_km - d.end_ideal_range_km)
         * car.efficiency
         * 100
       ) / NULLIF(d.distance, 0)
