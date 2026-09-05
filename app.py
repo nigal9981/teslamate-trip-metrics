@@ -26,18 +26,14 @@ DRIVING_QUERY = """
 SELECT ROUND(
   COALESCE(SUM(
     GREATEST(
-      start_position.ideal_battery_range_km -
-      end_position.ideal_battery_range_km,
+      drives.start_ideal_range_km -
+      drives.end_ideal_range_km,
       0
     ) * car.efficiency
   ), 0)::numeric,
   3
 ) AS total_kwh
 FROM drives
-JOIN positions AS start_position
-  ON drives.start_position_id = start_position.id
-JOIN positions AS end_position
-  ON drives.end_position_id = end_position.id
 JOIN cars AS car
   ON drives.car_id = car.id
 WHERE drives.car_id = %(car_id)s
