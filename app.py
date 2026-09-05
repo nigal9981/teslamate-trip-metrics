@@ -16,21 +16,31 @@ logger = logging.getLogger("teslamate_trip_metrics")
 with open("/data/options.json", encoding="utf-8") as file:
     config = json.load(file)
 
+CAR_ID = int(config.get("car_id", 1))
+INTERVAL = max(int(config.get("interval_seconds", 30)), 30)
+DISCOVERY_PREFIX = config.get("mqtt_discovery_prefix", "homeassistant")
+MQTT_BASE = "teslamate_trip_metrics"
+
+
 DRIVING_QUERY = """
 SELECT ROUND(
   COALESCE(SUM(
     GREATEST(
-      start_position.ideal_battery_range_km - end_position.ideal_battery_range_km,
+      start_position.ideal_battery_range_km -
+      end_position.ideal_battery_range_km,
       0
     ) * car.efficiency
   ), 0)::numeric,
   3
 ) AS total_kwh
 FROM drives
-JOIN positions AS start_position ON drives.start_position_id = start_position.id
-JOIN positions AS end_position ON drives.end_position_id = end_position.id
-JOIN cars AS car ON drives.car_id = car.id
-WHERE drives.car_id = 1
+JOIN positions AS start_position
+  ON drives.start_position_id = start_position.id
+JOIN positions AS end_position
+  ON drives.end_position_id = end_position.id
+JOIN cars AS car
+  ON drives.car_id = car.id
+WHERE drives.car_id = %(car_id)s
   AND drives.end_date IS NOT NULL;
 """
 
@@ -43,7 +53,7 @@ WITH position_deltas AS (
     LAG(p.drive_id) OVER w AS previous_drive_id,
     LAG(p.ideal_battery_range_km) OVER w AS previous_range
   FROM positions AS p
-  WHERE p.car_id = 1
+  WHERE p.car_id = %(car_id)s
     AND p.ideal_battery_range_km IS NOT NULL
   WINDOW w AS (PARTITION BY p.car_id ORDER BY p.date)
 )
@@ -54,121 +64,254 @@ SELECT ROUND(
   3
 ) AS total_kwh
 FROM position_deltas
-JOIN cars AS car ON position_deltas.car_id = car.id
+JOIN cars AS car ON car.id = position_deltas.car_id
 WHERE drive_id IS NULL
   AND previous_drive_id IS NULL;
 """
 
 CHARGING_QUERY = """
 SELECT ROUND(
-  COALESCE(
-    SUM(GREATEST(charge_energy_added, charge_energy_used)),
-    0
-  )::numeric,
+  COALESCE(SUM(energy_added), 0)::numeric,
   3
 ) AS total_kwh
 FROM charging_processes
-WHERE car_id = 1
-  AND end_date IS NOT NULL
-  AND (charge_energy_added IS NULL OR charge_energy_added > 0);
+WHERE car_id = %(car_id)s
+  AND end_date IS NOT NULL;
 """
 
-TOPIC_BASE = "teslamate_trip_metrics"
+LAST_DRIVE_QUERY = """
+SELECT
+  d.id AS drive_id,
+  d.distance AS distance_km,
+  d.end_date,
+  ROUND(
+    GREATEST(
+      start_position.ideal_battery_range_km -
+      end_position.ideal_battery_range_km,
+      0
+    ) * car.efficiency,
+    3
+  ) AS energy_kwh,
+  ROUND(
+    (
+      GREATEST(
+        start_position.ideal_battery_range_km -
+        end_position.ideal_battery_range_km,
+        0
+      ) * car.efficiency
+    ) / NULLIF(d.distance, 0) * 100,
+    1
+  ) AS consumption_kwh_100km
+FROM drives AS d
+JOIN positions AS start_position
+  ON d.start_position_id = start_position.id
+JOIN positions AS end_position
+  ON d.end_position_id = end_position.id
+JOIN cars AS car
+  ON d.car_id = car.id
+WHERE d.car_id = %(car_id)s
+  AND d.end_date IS NOT NULL
+ORDER BY d.end_date DESC
+LIMIT 1;
+"""
 
 
-def publish_discovery(client, metric, name, icon):
-    payload = {
-        "name": name,
-        "unique_id": f"teslamate_trip_metrics_{metric}",
-        "state_topic": f"{TOPIC_BASE}/{metric}",
-        "unit_of_measurement": "kWh",
-        "device_class": "energy",
-        "state_class": "total_increasing",
-        "icon": icon,
-        "device": {
-            "identifiers": ["teslamate_trip_metrics"],
-            "name": "TeslaMate Trip Metrics",
-            "manufacturer": "TeslaMate",
-        },
-    }
-    client.publish(
-        f"homeassistant/sensor/teslamate_trip_metrics/{metric}/config",
-        json.dumps(payload),
-        retain=True,
-    )
-
-
-def get_metric(query):
-    with psycopg.connect(
+def get_connection():
+    return psycopg.connect(
         host=config["db_host"],
         port=config["db_port"],
         dbname=config["db_name"],
         user=config["db_user"],
         password=config["db_password"],
-        connect_timeout=10,
         row_factory=dict_row,
-    ) as connection:
+    )
+
+
+def fetch_one(query):
+    with get_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(query)
-            return float(cursor.fetchone()["total_kwh"])
+            cursor.execute(query, {"car_id": CAR_ID})
+            return cursor.fetchone() or {}
 
 
-client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
-client.username_pw_set(config["mqtt_user"], config["mqtt_password"])
-client.connect(config["mqtt_host"], config["mqtt_port"], 60)
-client.loop_start()
+def publish_discovery(client, object_id, name, unit, device_class, state_class):
+    topic = f"{DISCOVERY_PREFIX}/sensor/teslamate_trip_metrics/{object_id}/config"
+    payload = {
+        "name": name,
+        "unique_id": f"teslamate_trip_metrics_{object_id}",
+        "state_topic": f"{MQTT_BASE}/{object_id}/state",
+        "availability_topic": f"{MQTT_BASE}/status",
+        "device": {
+            "identifiers": ["teslamate_trip_metrics"],
+            "name": "TeslaMate Trip Metrics",
+            "manufacturer": "TeslaMate",
+            "model": "Trip Metrics",
+        },
+    }
 
-publish_discovery(
-    client,
-    "total_driving_energy",
-    "TeslaMate Total Driving Energy",
-    "mdi:car-electric",
-)
-publish_discovery(
-    client,
-    "total_parked_energy",
-    "TeslaMate Total Parked Energy",
-    "mdi:car-clock",
-)
+    if unit:
+        payload["unit_of_measurement"] = unit
+    if device_class:
+        payload["device_class"] = device_class
+    if state_class:
+        payload["state_class"] = state_class
 
-publish_discovery(
-    client,
-    "total_charged_energy",
-    "TeslaMate Total Charged Energy",
-    "mdi:battery-charging",
-)
+    client.publish(topic, json.dumps(payload), retain=True)
 
-interval = max(int(config["interval_seconds"]), 30)
 
-while True:
-    try:
-        driving_kwh = get_metric(DRIVING_QUERY)
-        charged_kwh = get_metric(CHARGING_QUERY)
-        parked_kwh = get_metric(PARKED_QUERY)
+def publish_state(client, object_id, value):
+    client.publish(
+        f"{MQTT_BASE}/{object_id}/state",
+        str(value),
+        retain=True,
+    )
 
-        client.publish(
-            f"{TOPIC_BASE}/total_driving_energy",
-            f"{driving_kwh:.3f}",
-            retain=True,
+
+def setup_discovery(client):
+    sensors = [
+        (
+            "total_driving_energy",
+            "TeslaMate Total Driving Energy",
+            "kWh",
+            "energy",
+            "total_increasing",
+        ),
+        (
+            "total_parked_energy",
+            "TeslaMate Phantom / Parked Energy",
+            "kWh",
+            "energy",
+            "total_increasing",
+        ),
+        (
+            "total_charged_energy",
+            "TeslaMate Total Charged Energy",
+            "kWh",
+            "energy",
+            "total_increasing",
+        ),
+        (
+            "last_drive_distance",
+            "TeslaMate Last Drive Distance",
+            "km",
+            "distance",
+            "measurement",
+        ),
+        (
+            "last_drive_energy",
+            "TeslaMate Last Drive Energy",
+            "kWh",
+            "energy",
+            "measurement",
+        ),
+        (
+            "last_drive_consumption",
+            "TeslaMate Last Drive Consumption",
+            "kWh/100 km",
+            None,
+            "measurement",
+        ),
+        (
+            "last_drive_id",
+            "TeslaMate Last Drive ID",
+            None,
+            None,
+            None,
+        ),
+    ]
+
+    for object_id, name, unit, device_class, state_class in sensors:
+        publish_discovery(
+            client,
+            object_id,
+            name,
+            unit,
+            device_class,
+            state_class,
         )
-        client.publish(
-            f"{TOPIC_BASE}/total_parked_energy",
-            f"{parked_kwh:.3f}",
-            retain=True,
+
+
+def main():
+    client = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2
+    )
+
+    if config.get("mqtt_user"):
+        client.username_pw_set(
+            config["mqtt_user"],
+            config["mqtt_password"],
         )
 
-        client.publish(
-            f"{TOPIC_BASE}/total_charged_energy",
-            f"{charged_kwh:.3f}",
-            retain=True,
-        )
+    client.connect(
+        config["mqtt_host"],
+        int(config["mqtt_port"]),
+        60,
+    )
+    client.loop_start()
 
-        logger.info(
-            "Published driving %.3f kWh and parked %.3f kWh",
-            driving_kwh,
-            parked_kwh,
-        )
-    except Exception as error:
-        logger.error("Unable to update TeslaMate metrics: %s", error)
+    client.will_set(f"{MQTT_BASE}/status", "offline", retain=True)
+    client.publish(f"{MQTT_BASE}/status", "online", retain=True)
 
-    time.sleep(interval)
+    setup_discovery(client)
+
+    logger.info("TeslaMate Trip Metrics started (every %s seconds)", INTERVAL)
+
+    while True:
+        try:
+            driving = fetch_one(DRIVING_QUERY)
+            parked = fetch_one(PARKED_QUERY)
+            charging = fetch_one(CHARGING_QUERY)
+            last_drive = fetch_one(LAST_DRIVE_QUERY)
+
+            publish_state(
+                client,
+                "total_driving_energy",
+                driving.get("total_kwh", 0),
+            )
+            publish_state(
+                client,
+                "total_parked_energy",
+                parked.get("total_kwh", 0),
+            )
+            publish_state(
+                client,
+                "total_charged_energy",
+                charging.get("total_kwh", 0),
+            )
+
+            publish_state(
+                client,
+                "last_drive_id",
+                last_drive.get("drive_id", 0),
+            )
+            publish_state(
+                client,
+                "last_drive_distance",
+                last_drive.get("distance_km", 0),
+            )
+            publish_state(
+                client,
+                "last_drive_energy",
+                last_drive.get("energy_kwh", 0),
+            )
+            publish_state(
+                client,
+                "last_drive_consumption",
+                last_drive.get("consumption_kwh_100km", 0),
+            )
+
+            logger.info(
+                "Published driving %s kWh, parked %s kWh, latest drive %s",
+                driving.get("total_kwh", 0),
+                parked.get("total_kwh", 0),
+                last_drive.get("drive_id", 0),
+            )
+
+        except Exception as error:
+            logger.exception("Could not publish TeslaMate metrics: %s", error)
+
+        time.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    main()
