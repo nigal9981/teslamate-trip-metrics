@@ -87,39 +87,29 @@ SELECT
   FLOOR(EXTRACT(EPOCH FROM (d.end_date - d.start_date)) / 60)::integer AS duration_minutes,
   ROUND(
     (
-      GREATEST(
-        start_position.ideal_battery_range_km -
-        end_position.ideal_battery_range_km,
-        0
-      ) * car.efficiency
+      (d.start_ideal_battery_range_km - d.end_ideal_battery_range_km)
+      * car.efficiency
     )::numeric,
     3
   ) AS energy_kwh,
   ROUND(
     (
       (
-        GREATEST(
-          start_position.ideal_battery_range_km -
-          end_position.ideal_battery_range_km,
-          0
-        ) * car.efficiency
-      ) / NULLIF(d.distance, 0) * 100
+        (d.start_ideal_battery_range_km - d.end_ideal_battery_range_km)
+        * car.efficiency
+        * 100
+      ) / NULLIF(d.distance, 0)
     )::numeric,
     1
   ) AS consumption_kwh_100km
 FROM drives AS d
-JOIN positions AS start_position
-  ON d.start_position_id = start_position.id
-JOIN positions AS end_position
-  ON d.end_position_id = end_position.id
 JOIN cars AS car
-  ON d.car_id = car.id
+  ON car.id = d.car_id
 WHERE d.car_id = %(car_id)s
   AND d.end_date IS NOT NULL
 ORDER BY d.end_date DESC
 LIMIT 1;
 """
-
 
 def get_connection():
     return psycopg.connect(
