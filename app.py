@@ -71,7 +71,7 @@ WHERE drive_id IS NULL
 
 CHARGING_QUERY = """
 SELECT ROUND(
-  COALESCE(SUM(energy_added), 0)::numeric,
+  COALESCE(SUM(charge_energy_added), 0)::numeric,
   3
 ) AS total_kwh
 FROM charging_processes
